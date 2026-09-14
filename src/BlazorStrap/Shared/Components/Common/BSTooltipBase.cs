@@ -41,7 +41,7 @@ namespace BlazorStrap.Shared.Components.Common
         {
             BlazorStrapService.OnEvent += OnEventAsync;
         }
-        
+
         /// <inheritdoc/>
         public override async Task HideAsync()
         {
@@ -144,10 +144,15 @@ namespace BlazorStrap.Shared.Components.Common
             {
                 _secondRender = true;
                 HasRender = true;
+
+                // Fire-and-forget for mouse events - don't block first render
                 if (Target is not null)
                 {
-                    await BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Mouseenter);
-                    await BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Mouseleave);
+                    // Run both event registrations in parallel
+                    _ = Task.WhenAll(
+                        BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Mouseenter).AsTask(),
+                        BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Mouseleave).AsTask()
+                    );
                 }
             }
         }

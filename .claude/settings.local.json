@@ -7,7 +7,9 @@
       "Bash(dotnet restore:*)",
       "Bash(dotnet test:*)",
       "Bash(git -C /home/jbomhold3/RiderProjects/BlazorStrap add docs/VNext/)",
-      "Bash(git -C /home/jbomhold3/RiderProjects/BlazorStrap status --short)"
+      "Bash(git -C /home/jbomhold3/RiderProjects/BlazorStrap status --short)",
+      "Bash(gh api:*)",
+      "Bash(git ls-tree:*)"
     ],
     "deny": []
   }

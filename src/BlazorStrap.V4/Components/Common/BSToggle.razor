@@ -1,15 +1,36 @@
 ﻿@inherits BlazorStrap.Shared.Components.Common.BSToggleBase
 @namespace BlazorStrap.V4
 
+@* Collapse toggles: JS handles click for instant UI, no @onclick needed *@
+@* Dropdown toggles: JS handles click, tracks mouse, syncs to Blazor when mouse leaves area *@
+
 @if (!IsButton)
 {
-    <a href="javascript:void(0)" class="@ClassBuilder" aria-expanded="@Show().ToString().ToLower()" @attributes="Attributes" @onclick="EventUtil.AsNonRenderingEventHandler(ClickEvent)" data-blazorstrap="@DataId" data-blazorstrap-target="@Target" data-bs-toggle="@Element" @ref="MyRef">
-        @ChildContent 
-    </a>
+    @if (Element == "collapse" || Element == "dropdown")
+    {
+        <a href="javascript:void(0)" class="@ClassBuilder" aria-expanded="@Show().ToString().ToLower()" @attributes="Attributes" data-blazorstrap="@DataId" data-blazorstrap-target="@Target" data-bs-toggle="@Element" data-bs-hover="@(IsHoverDropdown ? "true" : null)" @ref="MyRef">
+            @ChildContent
+        </a>
+    }
+    else
+    {
+        <a href="javascript:void(0)" class="@ClassBuilder" aria-expanded="@Show().ToString().ToLower()" @attributes="Attributes" @onclick="EventUtil.AsNonRenderingEventHandler(ClickEvent)" data-blazorstrap="@DataId" data-blazorstrap-target="@Target" data-bs-toggle="@Element" @ref="MyRef">
+            @ChildContent
+        </a>
+    }
 }
 else
 {
-    <button type="button" class="@ClassBuilder" aria-expanded="@Show().ToString().ToLower()" @attributes="Attributes" @onclick="ClickEvent" data-blazorstrap="@DataId" data-blazorstrap-target="@Target" data-bs-toggle="@Element" @ref="MyRef">
-        @ChildContent
-    </button>
+    @if (Element == "collapse" || Element == "dropdown")
+    {
+        <button type="button" class="@ClassBuilder" aria-expanded="@Show().ToString().ToLower()" @attributes="Attributes" data-blazorstrap="@DataId" data-blazorstrap-target="@Target" data-bs-toggle="@Element" data-bs-hover="@(IsHoverDropdown ? "true" : null)" @ref="MyRef">
+            @ChildContent
+        </button>
+    }
+    else
+    {
+        <button type="button" class="@ClassBuilder" aria-expanded="@Show().ToString().ToLower()" @attributes="Attributes" @onclick="ClickEvent" data-blazorstrap="@DataId" data-blazorstrap-target="@Target" data-bs-toggle="@Element" @ref="MyRef">
+            @ChildContent
+        </button>
+    }
 }

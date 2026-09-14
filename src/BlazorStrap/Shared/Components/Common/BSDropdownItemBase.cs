@@ -109,6 +109,15 @@ namespace BlazorStrap.Shared.Components.Common
             if (Parent is { AllowItemClick: false } && Parent is { IsManual: false})
             {
                 await Parent.ToggleAsync();
+
+                // Picking an item in a submenu closes the whole menu, not just the submenu
+                // it lives in. Walk up until a parent opts out of closing on item click.
+                var ancestor = Parent.Parent;
+                while (ancestor is { AllowItemClick: false, IsManual: false })
+                {
+                    await ancestor.HideAsync();
+                    ancestor = ancestor.Parent;
+                }
             }
             if (OnClick.HasDelegate)
             {

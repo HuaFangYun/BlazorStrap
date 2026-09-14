@@ -44,8 +44,16 @@ namespace BlazorStrap.Shared.Components.Common
         [CascadingParameter] public BSCollapseBase? CollapseParent { get; set; }
         [CascadingParameter] public BSDropdownBase? DropDownParent { get; set; }
         protected ElementReference MyRef { get; set; }
+        // Must agree with Target below: data-bs-toggle tells the JS which handler owns the
+        // click, and data-blazorstrap-target tells it what to act on. A toggle inside a
+        // dropdown that sits in a collapse (every navbar dropdown) cascades both parents,
+        // so checking the collapse first labelled navbar dropdowns as collapses while
+        // still pointing at the dropdown menu - the click went to the collapse handler,
+        // the menu was never tracked as open, and nothing but the toggle could close it.
         protected string Element =>
-            CollapseParent != null ? "collapse" : DropDownParent != null ? "dropdown" : "unknown";
+            DropDownParent != null ? "dropdown" : CollapseParent != null ? "collapse" : "unknown";
+
+        protected bool IsHoverDropdown => DropDownParent?.IsMouseover ?? false;
         private bool _canHandleActive;
         private BSDropdownItemBase? _activeOwner;
 
@@ -118,17 +126,11 @@ namespace BlazorStrap.Shared.Components.Common
             return false;
         }
 
-        protected override async Task OnAfterRenderAsync(bool firstRender)
+        protected override Task OnAfterRenderAsync(bool firstRender)
         {
-            if(firstRender)
-            {
-                if(DropDownParent is not null)
-                if (DropDownParent.IsMouseover)
-                {
-                    await BlazorStrapService.JavaScriptInterop.AddEventAsync(DataId, DropDownParent.DataId, EventType.Mouseenter);
-                    await BlazorStrapService.JavaScriptInterop.AddEventAsync(DropDownParent.DataId, DropDownParent.DataId, EventType.Mouseleave);
-                }
-            }
+            // Note: IsMouseover hover events are now handled optimistically by JS
+            // via data-bs-hover attribute. See blazorstrapinterop.js setupDropdownHoverHandlers()
+            return Task.CompletedTask;
         }
         public void Dispose()
         {

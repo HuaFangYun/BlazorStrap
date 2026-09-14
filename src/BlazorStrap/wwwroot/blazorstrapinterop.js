@@ -3,6 +3,442 @@ let eventCallbacks = [];
 let documentEventsSet = false;
 let docuemntEventId = [];
 let link;
+let collapseToggleSetup = false;
+let dotnetRef = null;
+let collapseAnimating = {}; // Track which collapses are mid-animation
+let collapseSyncDebounce = {}; // Debounce Blazor sync per collapse
+
+// Optimistic UI tracking for dropdowns
+let dropdownAnimating = {};
+let dropdownSyncDebounce = {};
+let openDropdowns = {}; // Track currently open dropdowns for click-outside handling
+let hoverDropdowns = {}; // Track which dropdowns were opened via hover (vs click)
+let hoverCloseTimeout = {}; // Delay before closing hover dropdowns
+
+
+// Setup optimistic click handlers for collapse and dropdown toggles
+// This allows JS to handle UI immediately without waiting for Blazor Server round-trip
+export function setupCollapseToggles(dotnet) {
+    if (collapseToggleSetup) return;
+    dotnetRef = dotnet;
+
+    // Click-outside-to-close. Registered first so it runs before the toggle handler
+    // below, which stops propagation and would otherwise hide the click from it.
+    setupDropdownClickOutside();
+
+    document.addEventListener('click', async function(e) {
+        // Guard: e.target might be a text node or other non-Element
+        if (!e.target || typeof e.target.closest !== 'function') return;
+
+        // Find the toggle element (could be the target or an ancestor)
+        const collapseToggle = e.target.closest('[data-bs-toggle="collapse"][data-blazorstrap-target]');
+        // Exclude hover dropdowns (data-bs-hover="true") - they only respond to hover, not click
+        const dropdownToggle = e.target.closest('[data-bs-toggle="dropdown"][data-blazorstrap-target]:not([data-bs-hover="true"])');
+
+        if (collapseToggle) {
+            await handleCollapseToggle(e, collapseToggle);
+        } else if (dropdownToggle) {
+            await handleDropdownToggle(e, dropdownToggle);
+        }
+    }, true); // Use capture to intercept before Blazor
+
+    // Setup hover handlers for dropdowns (IsMouseover)
+    setupDropdownHoverHandlers();
+
+    collapseToggleSetup = true;
+}
+
+// Handle hover dropdowns (IsMouseover parameter)
+function setupDropdownHoverHandlers() {
+    // Mouseenter on toggle - show dropdown
+    document.addEventListener('mouseenter', function(e) {
+        if (!e.target || typeof e.target.closest !== 'function') return;
+
+        // Look for dropdown toggle that is hover-enabled
+        // The toggle has data-blazorstrap (its own ID) and data-blazorstrap-target (dropdown ID)
+        const toggle = e.target.closest('[data-bs-toggle="dropdown"][data-blazorstrap-target][data-bs-hover="true"]');
+        if (!toggle) return;
+
+        const targetId = toggle.getAttribute('data-blazorstrap-target');
+        if (!targetId) return;
+
+        const dropdown = document.querySelector('[data-blazorstrap="' + targetId + '"]');
+        if (!dropdown) return;
+
+        // Cancel any pending close
+        if (hoverCloseTimeout[targetId]) {
+            clearTimeout(hoverCloseTimeout[targetId]);
+            delete hoverCloseTimeout[targetId];
+        }
+
+        // Show dropdown immediately
+        if (!dropdown.classList.contains('show')) {
+            showDropdownOptimistic(targetId, toggle, dropdown, true); // true = hover
+        }
+    }, true);
+
+    // Also cancel close timeout when entering the dropdown menu itself
+    document.addEventListener('mouseenter', function(e) {
+        if (!e.target || typeof e.target.closest !== 'function') return;
+
+        const dropdownMenu = e.target.closest('.dropdown-menu[data-blazorstrap]');
+        if (!dropdownMenu) return;
+
+        const targetId = dropdownMenu.getAttribute('data-blazorstrap');
+        if (!targetId || !hoverDropdowns[targetId]) return;
+
+        // Cancel any pending close
+        if (hoverCloseTimeout[targetId]) {
+            clearTimeout(hoverCloseTimeout[targetId]);
+            delete hoverCloseTimeout[targetId];
+        }
+    }, true);
+
+    // Mouseleave - hide dropdown when leaving both toggle and menu (with delay)
+    document.addEventListener('mouseleave', function(e) {
+        if (!e.target || typeof e.target.closest !== 'function') return;
+
+        const toggle = e.target.closest('[data-bs-toggle="dropdown"][data-blazorstrap-target][data-bs-hover="true"]');
+        const dropdownMenu = e.target.closest('.dropdown-menu[data-blazorstrap]');
+
+        let targetId = null;
+        let dropdown = null;
+        let toggleEl = null;
+
+        if (toggle) {
+            targetId = toggle.getAttribute('data-blazorstrap-target');
+            dropdown = document.querySelector('[data-blazorstrap="' + targetId + '"]');
+            toggleEl = toggle;
+        } else if (dropdownMenu) {
+            targetId = dropdownMenu.getAttribute('data-blazorstrap');
+            dropdown = dropdownMenu;
+            toggleEl = document.querySelector('[data-blazorstrap-target="' + targetId + '"]');
+        }
+
+        if (!targetId || !dropdown || !toggleEl) return;
+
+        // Only handle hover-opened dropdowns
+        if (!hoverDropdowns[targetId]) return;
+
+        // Check if moving to the other element (toggle <-> dropdown)
+        const movingToToggle = toggleEl.contains(e.relatedTarget) || toggleEl === e.relatedTarget;
+        const movingToDropdown = dropdown.contains(e.relatedTarget) || dropdown === e.relatedTarget;
+
+        if (!movingToToggle && !movingToDropdown) {
+            // Delay before closing to give user time to move to the menu
+            if (hoverCloseTimeout[targetId]) {
+                clearTimeout(hoverCloseTimeout[targetId]);
+            }
+            hoverCloseTimeout[targetId] = setTimeout(() => {
+                delete hoverCloseTimeout[targetId];
+                // Double-check mouse isn't over toggle or dropdown now
+                if (dropdown.classList.contains('show')) {
+                    hideDropdownOptimistic(targetId, toggleEl, dropdown);
+                }
+            }, 150); // 150ms delay to allow moving to menu
+        }
+    }, true);
+}
+
+// Setup click-outside-to-close for dropdowns
+function setupDropdownClickOutside() {
+    // Capture phase: handleDropdownToggle() calls stopPropagation(), so a bubble-phase
+    // listener never sees clicks that land on a toggle - which is exactly the case that
+    // has to close the *other* open menus (a sibling submenu, or a different nav item).
+    // Runs before the toggle handler, so the menu being opened is not closed again.
+    document.addEventListener('click', function(e) {
+        if (!e.target || typeof e.target.closest !== 'function') return;
+        closeDropdownsOutside(e.target);
+    }, true);
+}
+
+// Close every open dropdown that the given element is not inside of.
+// A dropdown is kept when the element is inside its menu (that includes the togglers of
+// nested submenus, so opening a submenu doesn't close its parents) or inside its own
+// toggle (so handleDropdownToggle can toggle it closed instead of us closing + reopening).
+function closeDropdownsOutside(target) {
+    for (const targetId in openDropdowns) {
+        const entry = openDropdowns[targetId];
+        if (!entry) continue;
+        const { toggle, dropdown } = entry;
+
+        // Drop entries whose element is gone or was closed by someone else (e.g. Blazor
+        // hiding the dropdown when a BSDropdownItem was clicked).
+        if (!dropdown.isConnected || !dropdown.classList.contains('show')) {
+            delete openDropdowns[targetId];
+            delete hoverDropdowns[targetId];
+            continue;
+        }
+
+        if (toggle === target || toggle.contains(target)) continue;
+        if (dropdown === target || dropdown.contains(target)) continue;
+
+        hideDropdownOptimistic(targetId, toggle, dropdown);
+    }
+}
+
+// Close open dropdowns that are not ancestors of the one being opened.
+function closeDropdownsExceptAncestorsOf(toggle, dropdown) {
+    for (const targetId in openDropdowns) {
+        const entry = openDropdowns[targetId];
+        if (!entry) continue;
+        if (entry.dropdown === dropdown) continue;
+        if (toggle && (entry.dropdown.contains(toggle) || entry.toggle.contains(toggle))) continue;
+        hideDropdownOptimistic(targetId, entry.toggle, entry.dropdown);
+    }
+}
+
+// Show dropdown optimistically (shared by click and hover)
+// isHover: true if opened via hover, false if opened via click
+function showDropdownOptimistic(targetId, toggle, dropdown, isHover = false) {
+    if (dropdownAnimating[targetId]) return;
+
+    // Only one branch of the menu tree stays open at a time.
+    closeDropdownsExceptAncestorsOf(toggle, dropdown);
+
+    dropdown.classList.add('show');
+    toggle.setAttribute('aria-expanded', 'true');
+
+    // Track as open
+    openDropdowns[targetId] = { toggle, dropdown };
+
+    if (isHover) {
+        // Track that this was opened via hover
+        // Don't sync to Blazor - hover dropdowns are purely JS-driven to avoid flicker
+        hoverDropdowns[targetId] = true;
+    } else {
+        // For click dropdowns, sync to Blazor immediately
+        if (dotnetRef) {
+            dotnetRef.invokeMethodAsync('SyncDropdownState', targetId, true);
+        }
+    }
+}
+
+// Hide dropdown optimistically (shared by click, hover, and click-outside)
+function hideDropdownOptimistic(targetId, toggle, dropdown) {
+    if (dropdownAnimating[targetId]) return;
+
+    // Close submenus nested inside this one, otherwise they stay open (and tracked) and
+    // are still showing the next time the parent is opened.
+    for (const childId in openDropdowns) {
+        if (childId === targetId) continue;
+        const child = openDropdowns[childId];
+        if (!child) continue;
+        if (dropdown.contains(child.toggle) || dropdown.contains(child.dropdown)) {
+            hideDropdownOptimistic(childId, child.toggle, child.dropdown);
+        }
+    }
+
+    dropdown.classList.remove('show');
+    toggle.setAttribute('aria-expanded', 'false');
+
+    // Check if this was a hover dropdown before cleaning up
+    const wasHover = hoverDropdowns[targetId];
+
+    // Remove from open tracking
+    delete openDropdowns[targetId];
+
+    // Clean up hover tracking
+    delete hoverDropdowns[targetId];
+    if (hoverCloseTimeout[targetId]) {
+        clearTimeout(hoverCloseTimeout[targetId]);
+        delete hoverCloseTimeout[targetId];
+    }
+
+    // Clean up mouse tracking
+    stopMouseTracking(targetId);
+    delete componentSyncState[targetId];
+
+    // Only sync to Blazor for click dropdowns, not hover
+    // Hover dropdowns are purely JS-driven to avoid flicker
+    if (!wasHover && dotnetRef) {
+        dotnetRef.invokeMethodAsync('SyncDropdownState', targetId, false);
+    }
+}
+
+// Track component state for sync decisions
+let componentSyncState = {};
+
+// Handle collapse toggle clicks
+async function handleCollapseToggle(e, toggle) {
+    const targetId = toggle.getAttribute('data-blazorstrap-target');
+    if (!targetId) return;
+
+    const collapse = document.querySelector('[data-blazorstrap="' + targetId + '"]');
+    if (!collapse) return;
+
+    // Always prevent default/propagation for collapse toggles
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Skip if animation already in progress for this collapse
+    if (collapseAnimating[targetId]) return;
+
+    // Mark as animating and cancel any pending Blazor sync
+    collapseAnimating[targetId] = true;
+    if (collapseSyncDebounce[targetId]) {
+        clearTimeout(collapseSyncDebounce[targetId]);
+        delete collapseSyncDebounce[targetId];
+    }
+
+    // Initialize sync state tracking
+    if (!componentSyncState[targetId]) {
+        componentSyncState[targetId] = { animationComplete: false, mouseLeft: false };
+    }
+    componentSyncState[targetId].animationComplete = false;
+    componentSyncState[targetId].mouseLeft = false;
+
+    // Determine if horizontal collapse
+    const isHorizontal = collapse.classList.contains('collapse-horizontal');
+
+    // Determine the new state and optimistically update UI
+    const willShow = !collapse.classList.contains('show');
+
+    // Start mouse tracking
+    startMouseTracking(targetId, toggle, collapse, 'collapse');
+
+    try {
+        if (willShow) {
+            await showCollapse(collapse, isHorizontal, dotnetRef);
+        } else {
+            await hideCollapse(collapse, isHorizontal, dotnetRef);
+        }
+    } finally {
+        // Small delay before allowing new animations (prevents rapid re-triggering)
+        await new Promise(resolve => setTimeout(resolve, 50));
+        delete collapseAnimating[targetId];
+
+        // Mark animation complete and try to sync
+        componentSyncState[targetId].animationComplete = true;
+        trySync(targetId, collapse, 'collapse');
+    }
+}
+
+// Track mouse state for components
+let mouseTrackingState = {};
+
+// Handle dropdown toggle clicks
+async function handleDropdownToggle(e, toggle) {
+    const targetId = toggle.getAttribute('data-blazorstrap-target');
+    if (!targetId) return;
+
+    const dropdown = document.querySelector('[data-blazorstrap="' + targetId + '"]');
+    if (!dropdown) return;
+
+    // Always prevent default/propagation for dropdown toggles
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Skip if already processing this dropdown
+    if (dropdownAnimating[targetId]) return;
+
+    // Determine the new state and optimistically update UI
+    const willShow = !dropdown.classList.contains('show');
+
+    if (willShow) {
+        showDropdownOptimistic(targetId, toggle, dropdown);
+    } else {
+        hideDropdownOptimistic(targetId, toggle, dropdown);
+    }
+
+    // Mark as animating AFTER show/hide to prevent rapid re-triggering
+    dropdownAnimating[targetId] = true;
+    await new Promise(resolve => setTimeout(resolve, 50));
+    delete dropdownAnimating[targetId];
+}
+
+// Unified mouse tracking for all components
+function startMouseTracking(targetId, toggle, target, componentType) {
+    // Stop any existing tracking
+    stopMouseTracking(targetId);
+
+    const trackingState = {
+        toggle: toggle,
+        target: target,
+        componentType: componentType,
+        leaveTimeout: null
+    };
+
+    const checkMouseLeave = (e) => {
+        // Check if mouse is still over toggle or target
+        const overToggle = toggle.contains(e.relatedTarget) || toggle === e.relatedTarget;
+        const overTarget = target.contains(e.relatedTarget) || target === e.relatedTarget;
+
+        if (!overToggle && !overTarget) {
+            // Small delay before marking as left (in case mouse re-enters)
+            if (trackingState.leaveTimeout) clearTimeout(trackingState.leaveTimeout);
+            trackingState.leaveTimeout = setTimeout(() => {
+                if (componentSyncState[targetId]) {
+                    componentSyncState[targetId].mouseLeft = true;
+                    trySync(targetId, target, componentType);
+                }
+            }, 100);
+        }
+    };
+
+    const checkMouseEnter = (e) => {
+        // Mouse re-entered, cancel the leave timeout
+        if (trackingState.leaveTimeout) {
+            clearTimeout(trackingState.leaveTimeout);
+            trackingState.leaveTimeout = null;
+        }
+        if (componentSyncState[targetId]) {
+            componentSyncState[targetId].mouseLeft = false;
+        }
+    };
+
+    trackingState.leaveHandler = checkMouseLeave;
+    trackingState.enterHandler = checkMouseEnter;
+
+    toggle.addEventListener('mouseleave', checkMouseLeave);
+    target.addEventListener('mouseleave', checkMouseLeave);
+    toggle.addEventListener('mouseenter', checkMouseEnter);
+    target.addEventListener('mouseenter', checkMouseEnter);
+
+    mouseTrackingState[targetId] = trackingState;
+}
+
+// Stop mouse tracking for a component
+function stopMouseTracking(targetId) {
+    const trackingState = mouseTrackingState[targetId];
+    if (!trackingState) return;
+
+    if (trackingState.leaveTimeout) {
+        clearTimeout(trackingState.leaveTimeout);
+    }
+
+    trackingState.toggle.removeEventListener('mouseleave', trackingState.leaveHandler);
+    trackingState.target.removeEventListener('mouseleave', trackingState.leaveHandler);
+    trackingState.toggle.removeEventListener('mouseenter', trackingState.enterHandler);
+    trackingState.target.removeEventListener('mouseenter', trackingState.enterHandler);
+
+    delete mouseTrackingState[targetId];
+}
+
+// Try to sync to Blazor - only syncs when both animation complete AND mouse left
+function trySync(targetId, element, componentType) {
+    const state = componentSyncState[targetId];
+    if (!state) return;
+
+    // Only sync when both conditions are met
+    if (!state.animationComplete || !state.mouseLeft) return;
+
+    // Clean up tracking
+    stopMouseTracking(targetId);
+    delete componentSyncState[targetId];
+
+    // Get current DOM state and sync to Blazor
+    const currentState = element.classList.contains('show');
+
+    if (dotnetRef) {
+        if (componentType === 'collapse') {
+            dotnetRef.invokeMethodAsync('SyncCollapseState', targetId, currentState);
+        } else if (componentType === 'dropdown') {
+            dotnetRef.invokeMethodAsync('SyncDropdownState', targetId, currentState);
+        }
+    }
+}
+
 // Common
 export async function checkBackdrops(dotnet) {
     var backdrop = document.querySelector('.modal-backdrop');
@@ -51,6 +487,37 @@ export async function addDocumentEvent(eventName, creator, dotnet, ignoreChildre
 export async function removeDocumentEvent(eventName, creator) {
     docuemntEventId = docuemntEventId.filter(x => x.creator !== creator && x.eventtype !== eventName);
 }
+
+// Batch add multiple events in a single call for better performance
+export async function addEventsBatch(events, dotnet) {
+    if (!events || events.length === 0) return;
+
+    for (const event of events) {
+        if (event.eventName == "" || event.eventName == "sync" || event.eventName == "hide" || event.eventName == "show") continue;
+        var target = document.querySelector('[data-blazorstrap="' + event.targetId + '"]');
+        if (target) {
+            let eventFunc = debounce(function (e) {
+                if (event.ignoreChildren && e.target.getAttribute("data-blazorstrap") != event.targetId) return;
+                dotnet.invokeMethodAsync('InvokeEventAsync', "javascript", event.targetId, event.eventName, null);
+            }, 50);
+
+            let callback = eventCallbacks.find(x => x.id == event.targetId);
+            if (callback)
+                callback.events.push({ creator: event.creator, eventtype: event.eventName, func: eventFunc });
+            else
+                eventCallbacks.push({ id: event.targetId, events: [{ creator: event.creator, eventtype: event.eventName, func: eventFunc }] });
+
+            onElementRemoved(target, function () {
+                target.removeEventListener(event.eventName, eventFunc);
+                eventCallbacks = eventCallbacks.filter(x => x.id !== event.targetId);
+            });
+
+            target.addEventListener(event.eventName, eventFunc);
+        }
+    }
+    eventCallbacks = eventCallbacks.filter(x => document.querySelector('[data-blazorstrap="' + x.id + '"]'));
+}
+
 export async function addEvent(targetId, creator, eventName, dotnet, ignoreChildren) {
     if (eventName == "" || eventName == "sync" || eventName == "hide" || eventName == "show") return;
     var target = document.querySelector('[data-blazorstrap="' + targetId + '"]');
@@ -58,7 +525,7 @@ export async function addEvent(targetId, creator, eventName, dotnet, ignoreChild
         let eventFunc = debounce(function (e) {
             if (ignoreChildren && e.target.getAttribute("data-blazorstrap") != targetId) return;
             dotnet.invokeMethodAsync('InvokeEventAsync', "javascript", targetId, eventName, null);
-        }, 150);
+        }, 50);
         //add the eventfunc to eventcallbacks so we can remove it later
         let callback = eventCallbacks.find(x => x.id == targetId);
         if (callback)
@@ -183,7 +650,7 @@ export async function hideModal(modal, dotnet) {
         modal.setAttribute("aria-hidden", "true");
         document.body.classList.remove("modal-open");
 
-    }, 150);
+    }, 50);
 
     modal.style.display = "none";
 
@@ -199,7 +666,7 @@ export async function hideModal(modal, dotnet) {
         if (openModals.length == 0) {
             await waitForTransitionEnd(backdrop, function () {
                 backdrop.classList.remove("show");
-            }, 150);
+            }, 50);
 
             await dotnet.invokeMethodAsync('RemoveBackdropAsync');
         }
@@ -438,7 +905,7 @@ export async function hideTooltip(tooltip, dotnet) {
     if (!tooltip) return null;
     await waitForTransitionEnd(tooltip, function () {
         tooltip.classList.remove("show");
-    }, 150);
+    }, 50);
     return {
         ClassList: tooltip.classList.value,
         Styles: tooltip.style.cssText,
@@ -702,12 +1169,12 @@ export function removeAttribute(element, name) {
 }
 
 export function getHeight(element) {
-    if (element === null || element === undefined) null;
+    if (element === null || element === undefined) return null;
     return element.offsetHeight;
 }
 
 export function getWidth(element) {
-    if (element === null || element === undefined) null;
+    if (element === null || element === undefined) return null;
     return element.offsetWidth;
 }
 export function setBootstrapCss(themeUrl) {
@@ -727,21 +1194,48 @@ export function setBootstrapCss(themeUrl) {
 // Helper function to wait for transition end or timeout
 function waitForTransitionEnd(element, trigger, extraDelay = 1) {
     return new Promise((resolve) => {
-        const duration = getTransitionDuration(element);
-        const timeout = 450; // Minimum transition duration of 450ms any animations that take longer will be interrupted
-        const transitionEndHandler = () => {
-            setTimeout(async function () {
-                element.removeEventListener("transitionend", transitionEndHandler);
-                resolve(true);
-                clearTimeout(timeoutTimer);
-            }, extraDelay);
+        let resolved = false;
+        let transitionStarted = false;
+        let startTimeout, endTimeout;
+
+        const cleanup = () => {
+            element.removeEventListener("transitionstart", transitionStartHandler);
+            element.removeEventListener("transitionend", transitionEndHandler);
+            clearTimeout(startTimeout);
+            clearTimeout(endTimeout);
         };
 
+        const transitionStartHandler = () => {
+            if (resolved) return;
+            transitionStarted = true;
+            clearTimeout(startTimeout);
+            // Transition started - now wait up to 450ms for it to end
+            endTimeout = setTimeout(() => {
+                if (resolved) return;
+                resolved = true;
+                cleanup();
+                resolve(false); // Timed out waiting for end
+            }, 450);
+        };
+
+        const transitionEndHandler = () => {
+            if (resolved) return;
+            resolved = true;
+            cleanup();
+            setTimeout(() => resolve(true), extraDelay);
+        };
+
+        element.addEventListener("transitionstart", transitionStartHandler);
         element.addEventListener("transitionend", transitionEndHandler);
         trigger();
-        var timeoutTimer = setTimeout(function () {
-            resolve(false);
-        }, timeout);
+
+        // Short timeout to detect if no transition will start
+        startTimeout = setTimeout(() => {
+            if (resolved || transitionStarted) return;
+            resolved = true;
+            cleanup();
+            resolve(true); // No transition, resolve immediately
+        }, 50);
     });
 }
 
@@ -754,7 +1248,7 @@ function getTransitionDuration(element) {
 
 // Helper function to wait for the next frame
 function waitForNextFrame() {
-    return new Promise(resolve => setTimeout(resolve, 5));
+    return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }
 function setTimeoutAsync(func, time) {
     return new Promise(resolve => setTimeout(async function () { await func(); resolve(); }, time));

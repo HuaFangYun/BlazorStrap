@@ -293,17 +293,25 @@ namespace BlazorStrap.Shared.Components.Common
                 _objectRef = DotNetObjectReference.Create<BSPopoverBase>(this);
                 BlazorStrapService.OnEventForward += InteropEventCallback;
                 HasRender = true;
+
+                // Fire-and-forget for event registrations - don't block first render
                 if (Target != null)
                 {
-                    if (!IsDropdown)
+                    var eventTasks = new List<Task>();
+
+                    if (!IsDropdown && !NoClickEvent)
                     {
-                        if (!NoClickEvent)
-                            await BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Click);
+                        eventTasks.Add(BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Click).AsTask());
                     }
                     if (MouseOver)
                     {
-                        await BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Mouseenter);
-                        await BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Mouseleave);
+                        eventTasks.Add(BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Mouseenter).AsTask());
+                        eventTasks.Add(BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Mouseleave).AsTask());
+                    }
+
+                    if (eventTasks.Count > 0)
+                    {
+                        _ = Task.WhenAll(eventTasks);
                     }
                 }
             }

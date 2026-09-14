@@ -160,6 +160,34 @@ namespace BlazorStrap.Shared.Components.Common
             CanRefresh = true;
             BlazorStrapService.OnEventForward += InteropEventCallback;
             BlazorStrapService.OnEvent += OnEventAsync;
+            BlazorStrapService.OnCollapseSyncState += OnCollapseSyncState;
+        }
+
+        /// <summary>
+        /// Called when JS has handled the collapse animation and we just need to sync Blazor's state.
+        /// This is called AFTER the animation completes, so it's safe to trigger StateHasChanged.
+        /// </summary>
+        private void OnCollapseSyncState(string targetId, bool isShown)
+        {
+            if (targetId != DataId) return;
+
+            _shown = isShown;
+            Shown = isShown;
+
+            // Animation is complete - safe to re-render
+            InvokeAsync(StateHasChanged);
+
+            // Fire the appropriate event callbacks (fire-and-forget, don't await)
+            if (isShown)
+            {
+                _ = OnShow.InvokeAsync(this);
+                _ = OnShown.InvokeAsync(this);
+            }
+            else
+            {
+                _ = OnHide.InvokeAsync(this);
+                _ = OnHidden.InvokeAsync(this);
+            }
         }
 
         protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -173,13 +201,15 @@ namespace BlazorStrap.Shared.Components.Common
             }
             else
             {
-                if (IsInNavbar)
-                {
-                    await BlazorStrapService.JavaScriptInterop.AddDocumentEventAsync(EventType.Resize, DataId);
-                }
                 _secondRender = true;
                 _hasRendered = true;
                 _objectRef = DotNetObjectReference.Create(this);
+
+                // Fire-and-forget for resize event - don't block first render
+                if (IsInNavbar)
+                {
+                    _ = BlazorStrapService.JavaScriptInterop.AddDocumentEventAsync(EventType.Resize, DataId);
+                }
             }
         }
         
@@ -212,6 +242,7 @@ namespace BlazorStrap.Shared.Components.Common
         public async ValueTask DisposeAsync()
         {
             BlazorStrapService.OnEvent -= OnEventAsync;
+            BlazorStrapService.OnCollapseSyncState -= OnCollapseSyncState;
             if (IsInNavbar)
             {
                 try

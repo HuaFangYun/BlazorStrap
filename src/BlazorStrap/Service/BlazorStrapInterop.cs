@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace BlazorStrap.Service
@@ -75,6 +76,26 @@ namespace BlazorStrap.Service
             var module = await GetModuleAsync();
             if (module is not null)
                 await module.InvokeVoidAsync("addEvent", cancellationToken ?? CancellationToken.None, targetId, creatorId, eventName, _objectReference, ignoreChildren);
+        }
+
+        /// <summary>
+        /// Batch add multiple events in a single JS interop call for better performance.
+        /// </summary>
+        public async ValueTask AddEventsBatchAsync(IEnumerable<(string targetId, string creatorId, EventType eventType, bool ignoreChildren)> events, CancellationToken? cancellationToken = null)
+        {
+            var eventList = events.Select(e => new
+            {
+                targetId = e.targetId,
+                creator = e.creatorId,
+                eventName = Enum.GetName(typeof(EventType), e.eventType)?.ToLower() ?? "",
+                ignoreChildren = e.ignoreChildren
+            }).ToArray();
+
+            if (eventList.Length == 0) return;
+
+            var module = await GetModuleAsync();
+            if (module is not null)
+                await module.InvokeVoidAsync("addEventsBatch", cancellationToken ?? CancellationToken.None, eventList, _objectReference);
         }
 
         /// <summary>
@@ -460,7 +481,47 @@ namespace BlazorStrap.Service
         {
             if(sender == "jsdocument" && type == EventType.Resize && data is int width)
                 await BlazorStrap.InvokeResize(width);
-            await BlazorStrap.InvokeEvent(sender, target, type, data);   
+            await BlazorStrap.InvokeEvent(sender, target, type, data);
+        }
+
+        /// <summary>
+        /// Called from JS to sync collapse state after JS has already handled the animation.
+        /// This allows JS to handle the UI immediately while notifying Blazor of the state change.
+        /// </summary>
+        [JSInvokable]
+        public void SyncCollapseState(string targetId, bool isShown)
+        {
+            ((BlazorStrapCore)BlazorStrap).SyncCollapseState(targetId, isShown);
+        }
+
+        /// <summary>
+        /// Called from JS to sync dropdown state after JS has already handled the animation.
+        /// This allows JS to handle the UI immediately while notifying Blazor of the state change.
+        /// </summary>
+        [JSInvokable]
+        public void SyncDropdownState(string targetId, bool isShown)
+        {
+            ((BlazorStrapCore)BlazorStrap).SyncDropdownState(targetId, isShown);
+        }
+
+        /// <summary>
+        /// Called from JS to sync tooltip state after JS has already handled the animation.
+        /// This allows JS to handle the UI immediately while notifying Blazor of the state change.
+        /// </summary>
+        [JSInvokable]
+        public void SyncTooltipState(string targetId, bool isShown)
+        {
+            ((BlazorStrapCore)BlazorStrap).SyncTooltipState(targetId, isShown);
+        }
+
+        /// <summary>
+        /// Called from JS to sync popover state after JS has already handled the animation.
+        /// This allows JS to handle the UI immediately while notifying Blazor of the state change.
+        /// </summary>
+        [JSInvokable]
+        public void SyncPopoverState(string targetId, bool isShown)
+        {
+            ((BlazorStrapCore)BlazorStrap).SyncPopoverState(targetId, isShown);
         }
         private async Task RequestBackdropAsync(bool value)
         {
@@ -499,6 +560,11 @@ namespace BlazorStrap.Service
             try
             {
                 Module = await JsRuntime.InvokeAsync<IJSObjectReference>("import", "./_content/BlazorStrap/blazorstrapinterop.js");
+                // Setup optimistic click handlers for instant UI response
+                if (Module is not null)
+                {
+                    await Module.InvokeVoidAsync("setupCollapseToggles", _objectReference);
+                }
                 return Module;
             }
             catch(Exception e)

@@ -33,8 +33,11 @@ const timeout = (ms, message) => {
 
 const transitionEnd = (element) => {
     return new Promise(resolve => {
-        resFunc = resolve;
-        element.addEventListener("transitionend", resFunc);
+        const handler = () => {
+            element.removeEventListener("transitionend", handler);
+            resolve();
+        };
+        element.addEventListener("transitionend", handler);
     });
 }
 window.blazorStrap = {
@@ -775,21 +778,17 @@ window.blazorStrap = {
     },
     TransitionDidNotStart: async function (element, delay = 200) {
         return new Promise(function (resolve) {
-            let handler = function () {
+            const handler = function () {
                 resolve(false);
-                clearTimeout(timeout);
+                clearTimeout(timeoutId);
             };
 
-            const timeout = setTimeout(function () {
+            const timeoutId = setTimeout(function () {
                 resolve(true);
-                element.removeEventListener("transitionstart", handler, {
-                    once: true
-                });
+                element.removeEventListener("transitionstart", handler);
             }, delay);
-            element.addEventListener("transitionstart", handler, {
-                once: true
-            });
-        }).then(data => data);
+            element.addEventListener("transitionstart", handler, { once: true });
+        });
     },
     UpdatePopover: async function (element) {
         const id = element.getAttribute("data-blazorstrap");

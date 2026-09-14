@@ -82,6 +82,58 @@ namespace BlazorStrap.Service
         {
             OnEventForward?.Invoke(id, new CallerName(typeof(T).Name.ToLower()), EventType.Toggle );
         }
-        
+
+        /// <summary>
+        /// Event fired when JS has handled a collapse animation and Blazor needs to sync state.
+        /// </summary>
+        internal event Action<string, bool>? OnCollapseSyncState;
+
+        /// <summary>
+        /// Called from JS interop to sync collapse state after JS has already handled the animation.
+        /// </summary>
+        public void SyncCollapseState(string targetId, bool isShown)
+        {
+            OnCollapseSyncState?.Invoke(targetId, isShown);
+        }
+
+        /// <summary>
+        /// Event fired when JS has handled a dropdown animation and Blazor needs to sync state.
+        /// </summary>
+        internal event Action<string, bool>? OnDropdownSyncState;
+
+        /// <summary>
+        /// Called from JS interop to sync dropdown state after JS has already handled the animation.
+        /// </summary>
+        public void SyncDropdownState(string targetId, bool isShown)
+        {
+            OnDropdownSyncState?.Invoke(targetId, isShown);
+        }
+
+        /// <summary>
+        /// Event fired when JS has handled a tooltip animation and Blazor needs to sync state.
+        /// </summary>
+        internal event Action<string, bool>? OnTooltipSyncState;
+
+        /// <summary>
+        /// Called from JS interop to sync tooltip state after JS has already handled the animation.
+        /// </summary>
+        public void SyncTooltipState(string targetId, bool isShown)
+        {
+            OnTooltipSyncState?.Invoke(targetId, isShown);
+        }
+
+        /// <summary>
+        /// Event fired when JS has handled a popover animation and Blazor needs to sync state.
+        /// </summary>
+        internal event Action<string, bool>? OnPopoverSyncState;
+
+        /// <summary>
+        /// Called from JS interop to sync popover state after JS has already handled the animation.
+        /// </summary>
+        public void SyncPopoverState(string targetId, bool isShown)
+        {
+            OnPopoverSyncState?.Invoke(targetId, isShown);
+        }
+
     }
 }

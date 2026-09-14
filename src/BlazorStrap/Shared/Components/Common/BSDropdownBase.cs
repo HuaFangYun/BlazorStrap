@@ -232,7 +232,35 @@ namespace BlazorStrap.Shared.Components.Common
         protected override void OnInitialized()
         {
             BlazorStrapService.OnEvent += OnEventAsync;
+            BlazorStrapService.OnDropdownSyncState += OnDropdownSyncState;
             _lastIsNavPopper = IsNavPopper;
+        }
+
+        /// <summary>
+        /// Called when JS has handled the dropdown animation and we just need to sync Blazor's state.
+        /// This is called AFTER the animation completes, so it's safe to trigger StateHasChanged.
+        /// </summary>
+        private void OnDropdownSyncState(string targetId, bool isShown)
+        {
+            if (targetId != DataId) return;
+
+            _shown = isShown;
+            Shown = isShown;
+
+            // Animation is complete - safe to re-render
+            InvokeAsync(StateHasChanged);
+
+            // Fire the appropriate event callbacks (fire-and-forget, don't await)
+            if (isShown)
+            {
+                _ = OnShow.InvokeAsync(this);
+                _ = OnShown.InvokeAsync(this);
+            }
+            else
+            {
+                _ = OnHide.InvokeAsync(this);
+                _ = OnHidden.InvokeAsync(this);
+            }
         }
 
         protected override void OnParametersSet()
@@ -262,7 +290,7 @@ namespace BlazorStrap.Shared.Components.Common
         }
         protected override async Task OnAfterRenderAsync(bool firstRender)
         {
-     
+
             if (!firstRender && _secondRender)
             {
                 if (_eventQue.TryDequeue(out var eventItem))
@@ -272,15 +300,13 @@ namespace BlazorStrap.Shared.Components.Common
             }
             else
             {
-                if (IsMouseover && Toggler == null)
-                {
-                    await BlazorStrapService.JavaScriptInterop.AddEventAsync(Target, DataId, EventType.Mouseenter);
-                    await BlazorStrapService.JavaScriptInterop.AddEventAsync(DataId, DataId, EventType.Mouseleave);
-                }
                 _secondRender = true;
                 BlazorStrapService.OnEventForward += InteropEventCallback;
+
+                // Note: IsMouseover hover events are now handled optimistically by JS
+                // See blazorstrapinterop.js setupDropdownHoverHandlers()
             }
-            
+
         }
         public override async Task OnEventAsync(string sender, string target, EventType type, object? data)
         {
@@ -292,20 +318,15 @@ namespace BlazorStrap.Shared.Components.Common
             {
                 await HideAsync();
             }
-            if(IsMouseover && sender == "javascript" && target == Target && type == EventType.Mouseenter)
-            {
-                await ShowAsync();
-            }
-            if (IsMouseover && sender == "javascript" && target == DataId && type == EventType.Mouseleave  )
-            {
-                await HideAsync();
-            }
+            // Note: IsMouseover hover events (Mouseenter/Mouseleave) are now handled
+            // optimistically by JS. See blazorstrapinterop.js setupDropdownHoverHandlers()
         }
 
         public async ValueTask DisposeAsync()
         {
             BlazorStrapService.OnEvent -= OnEventAsync;
             BlazorStrapService.OnEventForward -= InteropEventCallback;
+            BlazorStrapService.OnDropdownSyncState -= OnDropdownSyncState;
             GC.SuppressFinalize(this);
         }
     }
